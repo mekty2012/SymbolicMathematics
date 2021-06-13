@@ -668,6 +668,72 @@ class CharSPEnvironment(object):
             expr = self.rewrite_sympy_expr(expr)
         return expr
 
+    def sympy_to_postfix(self, expr):
+        tree = self.sympy_to_tree(expr)
+        tree = self.tree_fill(tree)
+        return self.tree_to_postfix(tree)
+
+    def _sympy_to_tree(self, op, expr):
+        n_args = len(expr.args)
+        assert (op == 'add' or op == 'mul') and (n_args >= 2) or (op != 'add' and op != 'mul') and (1 <= n_args <= 2)
+
+        # square root
+        if op == 'pow' and isinstance(expr.args[1], sp.Rational) and expr.args[1].p == 1 and expr.args[1].q == 2:
+            return ['sqrt'] + [self.sympy_to_tree(expr.args[0])]
+        
+        # parse children, trying to balance expressions.
+        return self._sympy_to_tree_aux(op, expr, 0, n_args)
+    
+    def _sympy_to_tree_aux(self, op, expr, start, end):
+        n_args = end - start
+        if n_args == 1:
+            return [op, self.sympy_to_tree(expr.args[start])]
+        elif n_args == 2:
+            return [op, self.sympy_to_tree(expr.args[start]), self.sympy_to_tree(expr.args[start+1])]
+        elif n_args == 3:
+            return [op, [op, self.sympy_to_tree(expr.args[start]), 
+                             self.sympy_to_tree(expr.args[start+1])], 
+                        self.sympy_to_tree(expr.args[start+2])]
+        else:
+            return [op, self._sympy_to_tree_aux(op, expr, start, (end - start) // 2 + start),
+                        self._sympy_to_tree_aux(op, expr, (end - start) // 2 + start, end)]
+
+    def tree_max_depth(self, tree):
+        if len(tree) == 1:
+            return 1
+        elif len(tree) == 2:
+            return self.tree_max_depth(tree[1]) + 1
+        elif len(tree) == 3:
+            left_depth = self.tree_max_depth(tree[1])
+            right_depth = self.tree_max_depth(tree[2])
+            return max(left_depth, right_depth) + 1
+        else:
+            raise ValueError(f"The tree is expected to be at most binary, but having {len(tree)-1} children")
+
+    def tree_fill(self, tree):
+        max_depth = self.tree_max_depth(tree)
+        return self.tree_fill_aux(tree, max_depth)
+
+    def tree_fill_aux(self, tree, depth):
+        if depth == 1 and len(tree) == 1:
+            return tree
+        elif depth != 1 and len(tree) == 1:
+            return tree + [self.empty_tree(depth - 1), self.empty_tree(depth - 1)]
+        elif depth == 1 and len(tree) != 1:
+            raise ValueError("depth does not match")
+        elif depth != 1 and len(tree) == 2:
+            return [tree[0], self.tree_fill_aux(tree[1], depth -1), self.empty_tree(depth - 1)]
+        elif depth != 1 and len(tree) == 3:
+            return [tree[0], self.tree_fill_aux(tree[1], depth -1), self.tree_fill_aux(tree[1], depth - 1)]
+        else:
+            raise ValueError(f"The tree is expected to be at most binary, but having {len(tree) - 1} children")
+    
+    def empty_tree(self, depth):
+        if depth == 1:
+            return [None]
+        else:
+            return [None, self.empty_tree(depth - 1), self.empty_tree(depth - 1)]
+
     def _sympy_to_prefix(self, op, expr):
         """
         Parse a SymPy expression given an initial root operator.
@@ -697,6 +763,42 @@ class CharSPEnvironment(object):
             parse_list += self.sympy_to_prefix(expr.args[i])
 
         return parse_list
+
+    def sympy_to_tree(self, expr):
+        """
+        Convert a SymPy expression to a tree, with list representation.
+        """
+        if isinstance(expr, sp.Symbol):
+            return [str(expr)]
+        elif isinstance(expr, sp.Integer):
+            return self.write_int(int(str(expr)))
+        elif isinstance(expr, sp.Rational):
+            return ['div'] + self.write_int(int(expr.p)) + self.write_int(int(expr.q))
+        elif expr == sp.E:
+            return ['E']
+        elif expr == sp.pi:
+            return ['pi']
+        elif expr == sp.I:
+            return ['I']
+        
+        for op_type, op_name in self.SYMPY_OPERATORS.items():
+            if isinstance(expr, op_type):
+                return self._sympy_to_tree(op_name, expr)
+        for func_name, func in self.functions.items():
+            if isinstance(expr, func):
+                return self._sympy_to_tree(func_name, expr)
+        # unknown operator
+        raise UnknownSymPyOperator(f"Unknown SymPy operator: {expr}")
+
+    def tree_to_postfix(self, tree):
+        if len(tree) == 1:
+            return [tree[0]]
+        elif len(tree) == 2:
+            return self.tree_to_postfix(tree[1]) + [tree[0]]
+        elif len(tree) == 3:
+            return self.tree_to_postfix(tree[1]) + self.tree_to_postfix(tree[2]) + [tree[0]]
+        else:
+            raise ValueError(f"The tree is expected to be at most binary, but having {len(tree) - 1} children")
 
     def sympy_to_prefix(self, expr):
         """
